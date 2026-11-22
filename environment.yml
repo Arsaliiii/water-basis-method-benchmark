@@ -1,0 +1,10 @@
+name: water-benchmark
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pyscf
+  - geometric
+  - numpy
+  - pandas
+  - matplotlib
