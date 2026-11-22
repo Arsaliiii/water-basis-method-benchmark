@@ -66,6 +66,12 @@ python benchmark.py
 
 The script writes tables (`basis_study.csv`, `method_study.csv`), a markdown summary and the two figures into `results/`. It takes roughly a minute on a laptop.
 
+## Usage & Terms
+
+This repository and its files (code, scripts, notes, and benchmark outputs) are shared for **viewing and evaluation purposes only**.
+
+- **No Reuse or Redistribution:** You may view the files in this repository, but you may not copy, modify, distribute, publish, or use this code or data in other projects, products, or commercial work without explicit prior written permission from the author.
+- **No Warranty:** Everything in this repository is provided "as is," without any express or implied warranties of accuracy, completeness, or fitness for a particular purpose.
 ## Files
 
 - `benchmark.py` runs both studies and writes everything in `results/`
