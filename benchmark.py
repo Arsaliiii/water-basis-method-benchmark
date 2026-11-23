@@ -1,14 +1,16 @@
 """Water benchmark: how basis set and method choice change computed properties.
 
-Part A  Basis-set study: Hartree-Fock at a fixed starting geometry.
+Part A  Basis-set study: Hartree-Fock at a fixed, near-experimental geometry,
+        across Pople, Dunning and augmented Dunning basis sets.
 Part B  Method study:    HF, PBE and B3LYP, each with its own optimised
-                         geometry (cc-pVTZ basis).
+                         geometry, at cc-pVTZ and at aug-cc-pVTZ.
 
 Run:      python benchmark.py
 Outputs:  results/  (CSV tables, summary.md, PNG figures)
 Requires: PySCF, which runs on Linux, macOS or WSL (not native Windows).
 """
 
+import tempfile
 import time
 from pathlib import Path
 
@@ -19,16 +21,30 @@ matplotlib.use("Agg")  # draw figures to files, no display needed
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pyscf
 from pyscf import dft, gto, scf
 from pyscf.geomopt.geometric_solver import optimize
 
 HARTREE_TO_KCAL = 627.509
 
-# A rough starting guess for water; Part B relaxes it for each method.
+# Starting geometry for water (O-H 0.958 A, H-O-H 104.4 deg, close to
+# experiment). Part A uses it as is; Part B relaxes it for each method.
 START_GEOMETRY = "O 0 0 0; H 0 0.757 0.587; H 0 -0.757 0.587"
 
-BASIS_SETS = ["sto-3g", "6-31g", "6-31g*", "cc-pvdz", "cc-pvtz"]
-OPT_BASIS = "cc-pvtz"
+# Part A basis sets, grouped by family. Energy drops are only reported inside
+# a family, because only there is each basis a systematic improvement on the
+# previous one.
+BASIS_FAMILIES = {
+    "Pople": ["sto-3g", "6-31g", "6-31g*"],
+    "Dunning": ["cc-pvdz", "cc-pvtz"],
+    "aug-Dunning": ["aug-cc-pvdz", "aug-cc-pvtz"],
+}
+# Pople sets are defined with 6 Cartesian d functions; PySCF defaults to 5
+# spherical. Use Cartesian for Pople so results match the literature.
+CARTESIAN_FAMILIES = {"Pople"}
+
+# Part B: the same method comparison with and without diffuse functions.
+OPT_BASES = ["cc-pvtz", "aug-cc-pvtz"]
 METHODS = ["HF", "PBE", "B3LYP"]
 
 # Experimental gas-phase water (NIST CCCBDB). The dipole is vibrationally
@@ -64,26 +80,37 @@ def geometry(mol):
 def basis_study():
     """Part A: Hartree-Fock energy and dipole versus basis set."""
     rows = []
-    for basis in BASIS_SETS:
-        t0 = time.time()
-        mol = gto.M(atom=START_GEOMETRY, basis=basis, verbose=0)
-        mf = scf.RHF(mol)
-        energy = mf.kernel()
-        rows.append(
-            {
-                "basis": basis,
-                "basis_functions": mol.nao,
-                "energy_Eh": energy,
-                "dipole_D": dipole(mf),
-                "seconds": time.time() - t0,
-            }
-        )
+    for family, bases in BASIS_FAMILIES.items():
+        for basis in bases:
+            t0 = time.time()
+            mol = gto.M(
+                atom=START_GEOMETRY,
+                basis=basis,
+                cart=family in CARTESIAN_FAMILIES,
+                verbose=0,
+            )
+            mf = scf.RHF(mol)
+            energy = mf.kernel()
+            rows.append(
+                {
+                    "family": family,
+                    "basis": basis,
+                    "basis_functions": mol.nao,
+                    "energy_Eh": energy,
+                    "dipole_D": dipole(mf),
+                    "seconds": time.time() - t0,
+                }
+            )
     df = pd.DataFrame(rows)
-    df["energy_drop_kcal_mol"] = -df["energy_Eh"].diff() * HARTREE_TO_KCAL
+    df["energy_drop_kcal_mol"] = (
+        -df.groupby("family")["energy_Eh"].diff() * HARTREE_TO_KCAL
+    )
     df["dipole_error_D"] = df["dipole_D"] - EXPERIMENT["dipole"]
     return df
 
 
+# geomeTRIC prints a long banner for every optimisation. This log config only
+# shows warnings so the console output stays readable.
 QUIET_LOG = """[loggers]
 keys=root
 
@@ -109,31 +136,31 @@ format=%(message)s
 
 
 def method_study():
-    """Part B: optimise the geometry with each method, then compare."""
-    # geomeTRIC prints a long banner for every optimisation. Give it a log
-    # config that only shows warnings so the console output stays readable.
-    RESULTS.mkdir(exist_ok=True)
-    log_ini = (RESULTS / "quiet_log.ini").resolve()
-    log_ini.write_text(QUIET_LOG)
-
+    """Part B: optimise the geometry with each method and basis, then compare."""
     rows = []
-    for method in METHODS:
-        t0 = time.time()
-        mol = gto.M(atom=START_GEOMETRY, basis=OPT_BASIS, verbose=0)
-        mol_eq = optimize(make_mf(mol, method), logIni=str(log_ini))
-        mf = make_mf(mol_eq, method)
-        energy = mf.kernel()
-        r_oh, angle = geometry(mol_eq)
-        rows.append(
-            {
-                "method": method,
-                "energy_Eh": energy,
-                "r_OH_A": r_oh,
-                "angle_deg": angle,
-                "dipole_D": dipole(mf),
-                "seconds": time.time() - t0,
-            }
-        )
+    with tempfile.TemporaryDirectory() as tmp:
+        log_ini = Path(tmp) / "quiet_log.ini"
+        log_ini.write_text(QUIET_LOG)
+
+        for basis in OPT_BASES:
+            for method in METHODS:
+                t0 = time.time()
+                mol = gto.M(atom=START_GEOMETRY, basis=basis, verbose=0)
+                mol_eq = optimize(make_mf(mol, method), logIni=str(log_ini))
+                mf = make_mf(mol_eq, method)
+                energy = mf.kernel()
+                r_oh, angle = geometry(mol_eq)
+                rows.append(
+                    {
+                        "basis": basis,
+                        "method": method,
+                        "energy_Eh": energy,
+                        "r_OH_A": r_oh,
+                        "angle_deg": angle,
+                        "dipole_D": dipole(mf),
+                        "seconds": time.time() - t0,
+                    }
+                )
     df = pd.DataFrame(rows)
     df["r_OH_error_A"] = df["r_OH_A"] - EXPERIMENT["r_OH"]
     df["angle_error_deg"] = df["angle_deg"] - EXPERIMENT["angle"]
@@ -159,12 +186,16 @@ def to_markdown(df, columns, formats):
 
 
 def plot_basis(df):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(df["basis"], df["dipole_D"], "o-", label="HF, fixed geometry")
+    fig, ax = plt.subplots(figsize=(7, 4))
+    colors = {"Pople": "#4c78a8", "Dunning": "#f58518", "aug-Dunning": "#54a24b"}
+    for family, sub in df.groupby("family", sort=False):
+        ax.plot(sub.index, sub["dipole_D"], "o-", color=colors[family], label=family)
     ax.axhline(EXPERIMENT["dipole"], color="k", ls="--", label="experiment")
+    ax.set_xticks(df.index)
+    ax.set_xticklabels(df["basis"], rotation=30, ha="right")
     ax.set_ylabel("Dipole moment (D)")
     ax.set_xlabel("Basis set")
-    ax.set_title("Water dipole vs basis set (Hartree-Fock)")
+    ax.set_title("Water dipole vs basis set (Hartree-Fock, fixed geometry)")
     ax.legend()
     fig.tight_layout()
     fig.savefig(RESULTS / "dipole_vs_basis.png", dpi=150)
@@ -177,12 +208,21 @@ def plot_methods(df):
         ("angle_error_deg", "H-O-H angle error (deg)"),
         ("dipole_error_D", "Dipole error (D)"),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.6))
+    colors = {"cc-pvtz": "#999999", "aug-cc-pvtz": "#4c78a8"}
+    width = 0.38
+    x = np.arange(len(METHODS))
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.8))
     for ax, (col, label) in zip(axes, panels):
-        ax.bar(df["method"], df[col], color=["#999999", "#4c78a8", "#f58518"])
+        for i, basis in enumerate(OPT_BASES):
+            sub = df[df["basis"] == basis].set_index("method").loc[METHODS]
+            ax.bar(x + (i - 0.5) * width, sub[col], width,
+                   color=colors[basis], label=basis)
         ax.axhline(0, color="k", lw=0.8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(METHODS)
         ax.set_title(label, fontsize=10)
-    fig.suptitle(f"Error vs experiment, geometry optimised at {OPT_BASIS}")
+    axes[0].legend(fontsize=8)
+    fig.suptitle("Error vs experiment, geometry optimised with each method and basis")
     fig.tight_layout()
     fig.savefig(RESULTS / "method_errors.png", dpi=150)
     plt.close(fig)
@@ -195,7 +235,7 @@ def main():
     basis_df = basis_study()
     basis_df.to_csv(RESULTS / "basis_study.csv", index=False)
 
-    print("Part B: method study (geometry optimised for each method)")
+    print("Part B: method study (geometry optimised for each method and basis)")
     method_df = method_study()
     method_df.to_csv(RESULTS / "method_study.csv", index=False)
 
@@ -204,25 +244,26 @@ def main():
 
     basis_md = to_markdown(
         basis_df,
-        ["basis", "basis_functions", "energy_Eh", "energy_drop_kcal_mol",
-         "dipole_D", "dipole_error_D"],
+        ["family", "basis", "basis_functions", "energy_Eh",
+         "energy_drop_kcal_mol", "dipole_D", "dipole_error_D"],
         {"basis_functions": ".0f", "energy_Eh": ".6f",
-         "energy_drop_kcal_mol": ".1f"},
+         "energy_drop_kcal_mol": ".1f", "dipole_error_D": "+.3f"},
     )
     method_md = to_markdown(
         method_df,
-        ["method", "r_OH_A", "r_OH_error_A", "angle_deg", "angle_error_deg",
-         "dipole_D", "dipole_error_D"],
+        ["basis", "method", "r_OH_A", "r_OH_error_A", "angle_deg",
+         "angle_error_deg", "dipole_D", "dipole_error_D"],
         {"r_OH_A": ".4f", "r_OH_error_A": "+.4f", "angle_deg": ".2f",
          "angle_error_deg": "+.2f", "dipole_error_D": "+.3f"},
     )
     summary = (
         "## Part A: basis-set study (HF, fixed geometry)\n\n"
         f"{basis_md}\n\n"
-        f"## Part B: method study (optimised at {OPT_BASIS})\n\n"
+        "## Part B: method study (geometry optimised for each method and basis)\n\n"
         f"{method_md}\n\n"
         f"Experiment: r(OH) = {EXPERIMENT['r_OH']} A, "
-        f"angle = {EXPERIMENT['angle']} deg, dipole = {EXPERIMENT['dipole']} D\n"
+        f"angle = {EXPERIMENT['angle']} deg, dipole = {EXPERIMENT['dipole']} D\n\n"
+        f"Generated with PySCF {pyscf.__version__}\n"
     )
     (RESULTS / "summary.md").write_text(summary)
     print("\n" + summary)
