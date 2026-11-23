@@ -3,8 +3,10 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - pyscf
-  - geometric
-  - numpy
-  - pandas
-  - matplotlib
+  - pyscf=2.15.1
+  - geometric=1.1.1
+  - numpy=2.5.5
+  - pandas=3.1.1
+  - matplotlib=3.11.2
+  - matplotlib-base=3.11.2
+  - matplotlib-incline=0.2.2
